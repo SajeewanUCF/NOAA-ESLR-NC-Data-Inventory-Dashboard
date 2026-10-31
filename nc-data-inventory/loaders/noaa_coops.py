@@ -23,6 +23,9 @@ from config import APP_ID
 from loaders.base import STATION_COLUMNS, date_chunks, empty_stations, in_bbox
 
 SOURCE_NAME = "NOAA CO-OPS"
+KIND = "point"
+COVERAGE = {"start": "1846-01-01", "end": None, "resolution": "tide gauges, 6-min / hourly",
+            "note": "Verified water levels; datum selectable"}
 MDAPI = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi"
 DATAAPI = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
 TIMEOUT = 60
@@ -138,7 +141,10 @@ def _fetch_chunk(station_id, product, begin, end, datum) -> pd.DataFrame:
         }, index=t)
     elif product == "air_pressure":
         t = pd.to_datetime(raw["t"], utc=True)
-        out = pd.DataFrame({"air_pressure_mb": pd.to_numeric(raw["v"], errors="coerce").to_numpy()}, index=t)
+        out = pd.DataFrame({"pressure_mb": pd.to_numeric(raw["v"], errors="coerce").to_numpy()}, index=t)
+    elif product == "predictions":
+        t = pd.to_datetime(raw["t"], utc=True)
+        out = pd.DataFrame({"tide_m": pd.to_numeric(raw["v"], errors="coerce").to_numpy()}, index=t)
     else:
         t = pd.to_datetime(raw["t"], utc=True)
         out = pd.DataFrame({"water_level_m": pd.to_numeric(raw["v"], errors="coerce").to_numpy()}, index=t)
@@ -146,7 +152,7 @@ def _fetch_chunk(station_id, product, begin, end, datum) -> pd.DataFrame:
 
 
 def get_data(station_id: str, start, end, product: str = "hourly_height",
-             datum: str = "NAVD", progress=None) -> pd.DataFrame:
+             datum: str = "NAVD", progress=None, **_) -> pd.DataFrame:
     """Download a product for any period, chunking to respect NOAA limits.
 
     progress: optional callable(fraction: float) for a Streamlit progress bar.
