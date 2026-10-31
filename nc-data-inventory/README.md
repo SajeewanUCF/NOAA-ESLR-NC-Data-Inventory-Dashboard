@@ -27,6 +27,7 @@ nc-data-inventory/
 ├── app.py                 # dashboard: map, Observed / Model / Validation tabs
 ├── config.py              # map centre, NC bounding box, basemaps
 ├── validation.py          # alignment + skill metrics
+├── availability.py        # Availability tab: temporal coverage chart
 ├── requirements.txt
 ├── .streamlit/secrets.toml.example
 ├── data/                  # cached station lists (commit) + data/cache (ignored)
@@ -74,6 +75,15 @@ model − observed. Paired series and metrics download as CSV.
 
 Datum tip: CORA and GTSM water levels are relative to MSL, so choose **MSL** for
 NOAA gauges (the validation tab defaults to it) or tick *Remove means*.
+
+## Availability tab
+
+Overall temporal coverage in one chart: each observed source is a heat-strip
+(colour intensity = share of its stations with a record in that year, from the
+station inventories), each model/reanalysis is a bar over its period (GTSM: dark =
+original 1979–2018 release, light = extended 1950–2024), and a shaded band marks the
+common overlap of all models and all observed sources (automatic, or set manually).
+Below it, a per-station record-length chart for any observed source.
 
 ## Performance notes
 

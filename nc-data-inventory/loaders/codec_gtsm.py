@@ -39,6 +39,7 @@ from loaders.base import (CACHE_DIR, DATA_DIR, STATION_COLUMNS, empty_stations, 
 SOURCE_NAME = "CoDEC / GTSM-ERA5"
 KIND = "point"
 COVERAGE = {"start": "1950-01-01", "end": "2024-12-31", "resolution": "GTSM output points (0.1° coast), 10-min/hourly",
+            "core": ("1979-01-01", "2018-12-31"),   # original release; 1950-2024 = extended version
             "note": "Total water level, surge residual, tide (rel. MSL); needs CDS key"}
 
 DATASET = "sis-water-level-change-timeseries-cmip6"

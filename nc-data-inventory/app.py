@@ -19,6 +19,7 @@ from streamlit_folium import st_folium
 import config
 import loaders
 from loaders.base import haversine_km
+from availability import availability_tab
 from validation import align, is_direction, label, metrics
 
 st.set_page_config(page_title=config.APP_TITLE, page_icon="🌊", layout="wide")
@@ -422,10 +423,13 @@ with st.sidebar:
     if st.button("Clear cached data"):
         st.cache_data.clear()
 
-tab_obs, tab_mod, tab_val = st.tabs(["📡 Observed data", "🖥️ Model / hindcast data", "✅ Validation"])
+tab_obs, tab_mod, tab_val, tab_av = st.tabs(
+    ["📡 Observed data", "🖥️ Model / hindcast data", "✅ Validation", "📅 Availability"])
 with tab_obs:
     data_tab("Observed", loaders.OBSERVED, basemap)
 with tab_mod:
     data_tab("Model", loaders.MODEL, basemap)
 with tab_val:
     validation_tab(basemap)
+with tab_av:
+    availability_tab(cached_stations)
