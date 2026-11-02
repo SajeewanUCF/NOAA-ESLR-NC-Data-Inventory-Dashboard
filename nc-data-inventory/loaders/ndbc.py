@@ -53,10 +53,10 @@ def _varnames() -> dict[str, str]:
     return {n.lower(): n for n in names}
 
 
-def _query(variables: list[str], constraints: list[str]) -> pd.DataFrame:
+def _query(variables: list[str], constraints: list[str], timeout: int = TIMEOUT) -> pd.DataFrame:
     q = ",".join(variables) + "".join("&" + c for c in constraints)
     url = f"{ERDDAP}/tabledap/{DATASET}.csv?" + quote(q, safe="&=,")
-    r = requests.get(url, timeout=TIMEOUT)
+    r = requests.get(url, timeout=timeout)
     if r.status_code == 404:          # ERDDAP answers 404 when nothing matches
         return pd.DataFrame()
     r.raise_for_status()
@@ -111,14 +111,24 @@ def list_stations() -> pd.DataFrame:
     df.loc[df["status"] == "active", "end"] = pd.NaT
     df["source"] = SOURCE_NAME
 
-    # per-variable records: which stations actually measured waves / wind, and when
+    # per-variable records: which stations actually measured waves / wind, and when.
+    # Optional extra: if ERDDAP rejects or times out on these queries the station list is still returned.
     for var, tag in (("wvht", "wave"), ("wspd", "wind")):
-        rec = _var_record(vm, var)
-        df[f"{tag}_start"] = df["station_id"].map(rec["start"]) if rec is not None else pd.NaT
-        df[f"{tag}_end"] = df["station_id"].map(rec["end"]) if rec is not None else pd.NaT
-        if rec is None:  # query failed: numeric ids are moored buoys (waves), letters are C-MAN/NOS (wind)
+        nat = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+        df[f"{tag}_start"], df[f"{tag}_end"] = nat, nat.copy()
+        try:
+            rec = _var_record(vm, var)
+        except Exception:
+            rec = None
+        if rec is not None and not rec.empty:
+            df[f"{tag}_start"] = pd.to_datetime(df["station_id"].map(rec["start"]), utc=True)
+            df[f"{tag}_end"] = pd.to_datetime(df["station_id"].map(rec["end"]), utc=True)
+            # active stations: last valid report is recent -> treat as ongoing
+            df.loc[df[f"{tag}_end"] >= recent, f"{tag}_end"] = pd.NaT
+        else:  # numeric ids are moored buoys (waves); every station reports wind
             has = df["station_id"].str.match(r"^\d") if tag == "wave" else pd.Series(True, index=df.index)
-            df.loc[has, f"{tag}_start"], df.loc[has, f"{tag}_end"] = df.loc[has, "start"], df.loc[has, "end"]
+            df.loc[has, f"{tag}_start"] = df.loc[has, "start"]
+            df.loc[has, f"{tag}_end"] = df.loc[has, "end"]
     extra = ["wave_start", "wave_end", "wind_start", "wind_end"]
     return df[STATION_COLUMNS + extra]
 
@@ -129,7 +139,7 @@ def _var_record(vm: dict, var: str) -> pd.DataFrame | None:
         return None
     st, t, v = vm["station"], vm["time"], vm[var]
     try:
-        raw = _query([st, t], _bbox_constraints() + [f"{v}!=NaN", f'orderByMinMax("{st},{t}")'])
+        raw = _query([st, t], _bbox_constraints() + [f"{v}!=NaN", f'orderByMinMax("{st},{t}")'], timeout=60)
     except Exception:
         return None
     if raw.empty:

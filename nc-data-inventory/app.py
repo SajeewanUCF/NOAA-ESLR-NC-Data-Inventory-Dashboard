@@ -47,6 +47,20 @@ def cached_stations(key: str) -> pd.DataFrame:
     return df
 
 
+def station_list(key: str, warn: bool = True) -> pd.DataFrame:
+    """Station list of one source; a failing source gives a warning, not a broken page.
+    Failures are not cached, so the next rerun tries again."""
+    try:
+        return cached_stations(key)
+    except Exception as e:
+        if warn:
+            st.warning(f"{loaders.ALL[key].SOURCE_NAME}: station list could not be loaded "
+                       f"({type(e).__name__}: {str(e)[:200]}). Other sources are unaffected; "
+                       "use 'Clear cached data' in the sidebar to retry.")
+        return pd.DataFrame(columns=["source", "station_id", "name", "lat", "lon", "start", "end",
+                                     "status", "key"])
+
+
 @st.cache_data(ttl=12 * 3600, show_spinner=False, max_entries=64)
 def cached_data(key: str, station_id: str, start, end, product: str, opts: tuple) -> pd.DataFrame:
     return loaders.ALL[key].get_data(station_id, start, end, product, **dict(opts))
@@ -158,7 +172,7 @@ def data_tab(group: str, registry: dict, basemap: str):
 
     point_keys = [k for k in chosen if registry[k].KIND == "point"]
     grid_keys = [k for k in chosen if registry[k].KIND == "gridded"]
-    frames = [cached_stations(k) for k in point_keys]
+    frames = [station_list(k) for k in point_keys]
     stations = (pd.concat([f for f in frames if not f.empty], ignore_index=True)
                 if any(not f.empty for f in frames) else pd.DataFrame(columns=["key"]))
 
@@ -339,7 +353,7 @@ def validation_tab(basemap: str):
         st.subheader("Observed")
         okey = st.selectbox("Source", list(obs_labels), format_func=obs_labels.get, key="v_okey")
         omod = loaders.OBSERVED[okey]
-        ost = cached_stations(okey)
+        ost = station_list(okey)
         if ost.empty:
             st.warning("No stations available.")
             return
@@ -371,7 +385,7 @@ def validation_tab(basemap: str):
             st.caption(f"Model sampled at the grid cell/node nearest {orow['lat']:.3f}, {orow['lon']:.3f}.")
             mrow = None
         else:
-            mst = cached_stations(mkey)
+            mst = station_list(mkey)
             if mst.empty:
                 st.warning("Model output points are not available (see message above).")
                 return
@@ -492,4 +506,4 @@ with tab_mod:
 with tab_val:
     validation_tab(basemap)
 with tab_av:
-    availability_tab(cached_stations)
+    availability_tab(lambda k: station_list(k, warn=False))
