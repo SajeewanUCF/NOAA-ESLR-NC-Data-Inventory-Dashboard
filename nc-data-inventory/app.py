@@ -20,6 +20,7 @@ import config
 import loaders
 from loaders.base import haversine_km
 from availability import availability_tab
+from sites import add_sites_layer, get_site, site_options, sort_by_site
 from validation import align, is_direction, label, metrics
 
 st.set_page_config(page_title=config.APP_TITLE, page_icon="🌊", layout="wide")
@@ -88,7 +89,7 @@ def status_messages(keys):
 # --------------------------------------------------------------------------- #
 # Map
 # --------------------------------------------------------------------------- #
-def make_map(stations: pd.DataFrame, basemap: str, point=None) -> folium.Map:
+def make_map(stations: pd.DataFrame, basemap: str, point=None, overlays=(), site_label=None) -> folium.Map:
     tiles, attr = config.BASEMAPS[basemap]
     m = folium.Map(location=config.MAP_CENTER, zoom_start=config.MAP_ZOOM,
                    tiles=tiles, attr=attr, control_scale=True)
@@ -111,9 +112,13 @@ def make_map(stations: pd.DataFrame, basemap: str, point=None) -> folium.Map:
                                    f"<br>{start} → {end}", max_width=260),
             ).add_to(fg)
         fg.add_to(m)
+    for layer in overlays:
+        layer.add_to(m)
+    add_sites_layer(m, highlight=site_label)
     if point is not None:
         folium.Marker(point, tooltip="Selected point",
                       icon=folium.Icon(color="red", icon="crosshairs", prefix="fa")).add_to(m)
+        m.location = list(point)
     folium.LayerControl(collapsed=False).add_to(m)
     return m
 
@@ -161,30 +166,63 @@ def data_tab(group: str, registry: dict, basemap: str):
     if not modes:
         st.warning("No stations available for the selected sources.")
         return
-    mode = st.radio("Select data by", modes, horizontal=True, key=f"mode_{group}")
+
+    # ---- apply clicks queued on the previous run (before any widget is created)
+    for k in ("site", "lat", "lon", "mode"):
+        pend = st.session_state.pop(f"_pending_{k}_{group}", None)
+        if pend is not None:
+            st.session_state[f"{k}_{group}"] = pend
+
+    c0, c1, c2 = st.columns([2, 2, 2])
+    mode = c0.radio("Select data by", modes, horizontal=True, key=f"mode_{group}")
+    site_label = c1.selectbox("Near study site", site_options(), key=f"site_{group}",
+                              help="Sorts stations by distance to the site; in point mode moves the point to the site.")
+    site = get_site(site_label)
+    point_mode = mode.startswith("Point")
+    gkey = c2.selectbox("Gridded source", grid_keys, format_func=labels.get, key=f"gsrc_{group}") if point_mode else None
 
     pkey_lat, pkey_lon = f"lat_{group}", f"lon_{group}"
     st.session_state.setdefault(pkey_lat, 35.20)
     st.session_state.setdefault(pkey_lon, -75.60)
-    point = ((st.session_state[pkey_lat], st.session_state[pkey_lon])
-             if mode.startswith("Point") else None)
+    if site is not None and st.session_state.get(f"_prevsite_{group}") != site_label:
+        st.session_state[f"_prevsite_{group}"] = site_label
+        if point_mode:
+            st.session_state[pkey_lat], st.session_state[pkey_lon] = round(site["lat"], 4), round(site["lon"], 4)
+    point = (st.session_state[pkey_lat], st.session_state[pkey_lon]) if point_mode else None
+
+    # gridded source can draw its grid / mesh around the point
+    overlays, overlay_note = [], None
+    if point_mode and hasattr(registry[gkey], "map_layer"):
+        try:
+            layer, overlay_note = registry[gkey].map_layer(*point)
+            overlays = [layer] if layer is not None else []
+        except Exception as e:  # never let an overlay break the page
+            overlay_note = f"Grid overlay unavailable: {e}"
+    if site is not None and not stations.empty:
+        stations = sort_by_site(stations, site)
 
     col_map, col_inv = st.columns([3, 2])
     with col_map:
-        state = st_folium(make_map(stations, basemap, point), height=560, use_container_width=True,
-                          key=f"map_{group}",
+        state = st_folium(make_map(stations, basemap, point, overlays, site_label), height=560,
+                          use_container_width=True, key=f"map_{group}",
                           returned_objects=["last_object_clicked_tooltip", "last_clicked"])
-        if mode.startswith("Point"):
-            st.caption("Click anywhere on the map to set the point (nearest grid cell / mesh node is used).")
+        if point_mode:
+            st.caption("Click anywhere on the map (or on a mesh node / study site) to set the point. "
+                       + (overlay_note or ""))
     with col_inv:
         if not stations.empty:
-            st.markdown(f"**Station inventory — {len(stations)} stations**")
+            st.markdown(f"**Station inventory — {len(stations)} stations**"
+                        + (f" (sorted by distance to site {site['num']})" if site is not None else ""))
             show = stations.assign(
                 source=stations["key"].map(labels),
                 start=pd.to_datetime(stations["start"], utc=True).dt.strftime("%Y-%m-%d"),
                 end=pd.to_datetime(stations["end"], utc=True).dt.strftime("%Y-%m-%d").fillna("present"),
-            )[["source", "station_id", "name", "start", "end", "status"]]
-            st.dataframe(show, height=330 if grid_keys else 520, hide_index=True, width="stretch")
+            )
+            cols = ["source", "station_id", "name", "start", "end", "status"]
+            if "dist_km" in show:
+                show["km"] = show["dist_km"].round(1)
+                cols = ["km"] + cols
+            st.dataframe(show[cols], height=330 if grid_keys else 520, hide_index=True, width="stretch")
         if grid_keys:
             st.markdown("**Gridded datasets** (whole region)")
             st.dataframe(pd.DataFrame([{
@@ -195,35 +233,50 @@ def data_tab(group: str, registry: dict, basemap: str):
                 "variables": registry[k].COVERAGE["note"],
             } for k in grid_keys]), hide_index=True, width="stretch")
 
-    # map click -> point inputs
+    # ---- map clicks: site pin, mesh node, station, or empty map (point mode)
+    tip = (state or {}).get("last_object_clicked_tooltip")
     lc = (state or {}).get("last_clicked")
-    if mode.startswith("Point") and lc:
-        new = (round(lc["lat"], 4), round(lc["lng"], 4))
-        if st.session_state.get(f"prevclick_{group}") != new:
-            st.session_state[f"prevclick_{group}"] = new
-            st.session_state[pkey_lat], st.session_state[pkey_lon] = new
+    lc_r = (round(lc["lat"], 4), round(lc["lng"], 4)) if lc else None
+    new_tip = tip and tip != st.session_state.get(f"_prevtip_{group}")
+    new_lc = lc_r and lc_r != st.session_state.get(f"_prevclick_{group}")
+    st.session_state[f"_prevtip_{group}"], st.session_state[f"_prevclick_{group}"] = tip, lc_r
+    if new_tip and tip.startswith("site|"):
+        num = int(tip.split("|")[1])
+        lab = next((o for o in site_options() if o.startswith(f"{num}. ")), None)
+        if lab and lab != site_label:
+            st.session_state[f"_pending_site_{group}"] = lab
             st.rerun()
+    elif new_tip and tip.startswith("node|"):
+        lat_s, lon_s = tip.split("|")[2].split(",")
+        st.session_state[f"_pending_lat_{group}"] = round(float(lat_s), 5)
+        st.session_state[f"_pending_lon_{group}"] = round(float(lon_s), 5)
+        st.rerun()
+    elif point_mode and new_lc and not new_tip:
+        st.session_state[f"_pending_lat_{group}"], st.session_state[f"_pending_lon_{group}"] = lc_r
+        st.rerun()
 
     st.divider()
     if mode == "Station":
         stations["label"] = (stations["key"].map(labels) + " · " + stations["station_id"].astype(str)
                              + " · " + stations["name"].astype(str))
+        if "dist_km" in stations:
+            stations["label"] = stations["label"] + " · " + stations["dist_km"].round(1).astype(str) + " km"
         hit = clicked_station(state)
         idx = 0
         if hit:
             match = stations.index[(stations["key"] == hit[0]) & (stations["station_id"].astype(str) == hit[1])]
             idx = int(match[0]) if len(match) else 0
         row = stations.loc[st.selectbox("Station (or click one on the map)", stations.index, index=idx,
-                                        format_func=stations["label"].get, key=f"stn_{group}")]
+                                        format_func=stations["label"].get, key=f"stn_{group}_{site_label}")]
         key, station_id, title = row["key"], row["station_id"], row["label"]
         rec_start, rec_end = coverage_dates(registry[key], row)
     else:
-        c0, c1, c2 = st.columns([2, 1, 1])
-        key = c0.selectbox("Gridded source", grid_keys, format_func=labels.get, key=f"gsrc_{group}")
-        lat = c1.number_input("Latitude", -90.0, 90.0, step=0.01, format="%.4f", key=pkey_lat)
-        lon = c2.number_input("Longitude", -180.0, 180.0, step=0.01, format="%.4f", key=pkey_lon)
-        station_id = f"{lat:.4f},{lon:.4f}"
-        title = f"{labels[key]} · {lat:.3f}, {lon:.3f}"
+        key = gkey
+        c1, c2 = st.columns(2)
+        lat = c1.number_input("Latitude", -90.0, 90.0, step=0.001, format="%.5f", key=pkey_lat)
+        lon = c2.number_input("Longitude", -180.0, 180.0, step=0.001, format="%.5f", key=pkey_lon)
+        station_id = f"{lat:.5f},{lon:.5f}"
+        title = f"{labels[key]} · {lat:.4f}, {lon:.4f}"
         rec_start, rec_end = coverage_dates(registry[key])
 
     mod = registry[key]
@@ -275,6 +328,9 @@ def validation_tab(basemap: str):
         st.markdown(PAIRING_HINTS)
 
     obs_labels = {k: m.SOURCE_NAME for k, m in loaders.OBSERVED.items()}
+    vsite_label = st.selectbox("Study site (optional)", site_options(), key="v_site",
+                               help="Sorts observed stations by distance to the site (nearest first).")
+    vsite = get_site(vsite_label)
     mod_labels = {k: m.SOURCE_NAME for k, m in loaders.MODEL.items()}
     left, right = st.columns(2)
 
@@ -288,8 +344,12 @@ def validation_tab(basemap: str):
             st.warning("No stations available.")
             return
         ost = ost.reset_index(drop=True)
+        ost = sort_by_site(ost, vsite)
         ost["label"] = ost["station_id"].astype(str) + " · " + ost["name"].astype(str)
-        orow = ost.loc[st.selectbox("Station", ost.index, format_func=ost["label"].get, key="v_ostn")]
+        if "dist_km" in ost:
+            ost["label"] = ost["label"] + " · " + ost["dist_km"].round(1).astype(str) + " km from site"
+        orow = ost.loc[st.selectbox("Station", ost.index, format_func=ost["label"].get,
+                                    key=f"v_ostn_{vsite_label}")]
         oprod = st.selectbox("Product", list(omod.PRODUCTS), key=f"v_oprod_{okey}",
                              format_func=lambda p: omod.PRODUCTS[p]["label"])
         oopts = {n: st.selectbox(n.capitalize(), c, key=f"v_oopt_{n}_{okey}",

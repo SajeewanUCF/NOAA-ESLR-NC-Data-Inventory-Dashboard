@@ -64,5 +64,19 @@ def get_data(station_id: str, start, end, product: str = "wind", model: str = "e
     return out
 
 
+def map_layer(lat: float, lon: float):
+    """Outline of the 0.25° ERA5 cell that will be used for this point."""
+    import folium
+    clat, clon = round(lat * 4) / 4, round(lon * 4) / 4
+    fg = folium.FeatureGroup(name="ERA5 grid cell")
+    for dy in (-0.25, 0, 0.25):          # neighbouring cells, faint
+        for dx in (-0.25, 0, 0.25):
+            c = (clat + dy, clon + dx)
+            folium.Rectangle([(c[0] - 0.125, c[1] - 0.125), (c[0] + 0.125, c[1] + 0.125)],
+                             color="#7f7f7f", weight=2 if (dx, dy) == (0, 0) else 0.7,
+                             fill=(dx, dy) == (0, 0), fill_opacity=0.12, interactive=False).add_to(fg)
+    return fg, f"ERA5 cell centred at {clat:.2f}, {clon:.2f} (0.25° ≈ 28 × 23 km)."
+
+
 if __name__ == "__main__":
     print(get_data("35.2,-75.5", "2018-09-13", "2018-09-15"))

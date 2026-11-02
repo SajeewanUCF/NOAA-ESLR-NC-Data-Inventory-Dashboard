@@ -94,7 +94,14 @@ def list_stations() -> pd.DataFrame:
     sites.loc[sites["status"] == "active", "end"] = pd.NaT
     sites["name"] = sites["name"].fillna(sites["station_id"]) + " [" + sites["params"] + "]"
     sites["source"] = SOURCE_NAME
-    return sites[STATION_COLUMNS]
+
+    # per-category records: discharge (river flow) and NAVD88 water-surface elevation (water level)
+    for tag, codes in (("q", ["00060"]), ("wl", ["62620", "63160"])):
+        sub = ts[ts["parameter_code"].isin(codes)].groupby("monitoring_location_id")
+        sites[f"{tag}_start"] = sites["station_id"].map(sub["begin"].min())
+        sites[f"{tag}_end"] = sites["station_id"].map(sub["end"].max())
+    sites["params"] = sites["params"]
+    return sites[STATION_COLUMNS + ["params", "q_start", "q_end", "wl_start", "wl_end"]]
 
 
 def _to_si(values: pd.Series, units: pd.Series) -> pd.Series:

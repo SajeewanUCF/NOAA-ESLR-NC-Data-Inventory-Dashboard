@@ -27,10 +27,14 @@ nc-data-inventory/
 ├── app.py                 # dashboard: map, Observed / Model / Validation tabs
 ├── config.py              # map centre, NC bounding box, basemaps
 ├── validation.py          # alignment + skill metrics
-├── availability.py        # Availability tab: temporal coverage chart
+├── availability.py        # Availability tab (renders templates/inventory.*)
+├── inventory.py           # site × source matching and V1 rating rules
+├── sites.py               # RCCP study sites (data/rccp_sites.csv)
+├── templates/             # HTML/CSS/JS of the Availability tab (ported from nc_data_inventory_V1)
 ├── requirements.txt
 ├── .streamlit/secrets.toml.example
-├── data/                  # cached station lists (commit) + data/cache (ignored)
+├── data/                  # rccp_sites.csv, nc_land.json, cached station lists / CORA mesh (commit);
+│                          # data/cache is ignored
 └── loaders/
     ├── __init__.py        # registry: OBSERVED and MODEL sources
     ├── base.py            # shared interface + helpers
@@ -53,6 +57,7 @@ Quick check of any single source: `python -m loaders.ndbc` (same for every loade
 
 ```bash
 python -m loaders.wis --build            # WIS station locations -> data/wis_stations.csv (few minutes)
+python -m loaders.cora --build           # CORA NC mesh nodes   -> data/cora_*.csv.gz
 python -m loaders.codec_gtsm             # GTSM output points  -> data/gtsm_stations.csv (needs CDS key)
 ```
 
@@ -76,14 +81,40 @@ model − observed. Paired series and metrics download as CSV.
 Datum tip: CORA and GTSM water levels are relative to MSL, so choose **MSL** for
 NOAA gauges (the validation tab defaults to it) or tick *Remove means*.
 
+## RCCP study sites
+
+The 10 project sites live in `data/rccp_sites.csv` (number, name, setting, note, and two flags:
+`sheltered` = sound/estuary/river site, `river_relevant` = riverine or compound-flood hazard).
+They appear on every map; the **Near study site** selector sorts stations by distance (or, in
+point mode, moves the point to the site), and the Validation tab can sort stations the same way.
+
 ## Availability tab
 
-Overall temporal coverage in one chart: each observed source is a heat-strip
-(colour intensity = share of its stations with a record in that year, from the
-station inventories), each model/reanalysis is a bar over its period (GTSM: dark =
-original 1979–2018 release, light = extended 1950–2024), and a shaded band marks the
-common overlap of all models and all observed sources (automatic, or set manually).
-Below it, a per-station record-length chart for any observed source.
+A port of the `nc_data_inventory_V1` page, computed live from every source:
+summary strip; zoomable coast map (drag, Ctrl/⌘ + scroll, buttons) with sites, all stations and
+WIS/GTSM output points (legend items toggle layers); site panel with the nearest station of each
+type, the nearest model point/node/cell and Good/Fair/Poor ratings; the **Nearest station,
+distance and record length** matrix (observations + models, CSV download); the coverage chart
+and the water-level record timeline. Colours follow the app theme (light/dark/custom).
+
+Rating rules are those of V1 (see `inventory.py`); models use the same distance limits for the
+quantity they provide. Model ratings describe coverage, not accuracy — use the Validation tab
+for skill.
+
+## NOAA CORA
+
+CORA's bucket was restructured in 2026 (`cora_gec/...`, virtual Zarr stores, plus a per-state
+**NC shoreline** water-level file). The loader tries, in order: the NC shoreline file (water
+level), NOAA's intake catalog, any Zarr store found by listing the bucket, then the yearly
+NetCDF files. Mesh option **auto** uses the shoreline nodes when one is within 1.5 km.
+
+In point mode the mesh is drawn around the point (pink = full mesh nodes and triangles, blue =
+shoreline nodes); click a node to select it exactly.
+
+```bash
+python -m loaders.cora --build      # cache NC mesh nodes (+ triangles) in data/ — commit them
+python -m loaders.cora --diagnose   # what the bucket contains and which access path works
+```
 
 ## Performance notes
 
@@ -91,8 +122,8 @@ Below it, a per-station record-length chart for any observed source.
 * GTSM: the CDS sends one global file per month, so each month is downloaded once,
   cut to the NC region and cached in `data/cache/gtsm/`. CDS queues can take minutes
   per month — pre-fetch with `python -m loaders.codec_gtsm --prefetch 2018 2018`.
-* CORA water levels are slow to read from the cloud (known chunking issue noted by
-  NOAA); keep requests to months rather than decades.
+* CORA full-mesh water levels are slow to read from the cloud (NOAA known issue); the NC
+  shoreline nodes are much faster. Keep full-mesh requests to months.
 * CONUS404 hourly: use the *daily* product for multi-year periods.
 * NDBC wind is measured at anemometer height (~4–5 m), models give 10 m wind.
 

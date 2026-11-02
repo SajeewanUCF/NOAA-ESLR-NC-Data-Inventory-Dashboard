@@ -110,7 +110,33 @@ def list_stations() -> pd.DataFrame:
     df["status"] = ["active" if pd.notna(e) and e >= recent else "historical" for e in df["end"]]
     df.loc[df["status"] == "active", "end"] = pd.NaT
     df["source"] = SOURCE_NAME
-    return df[STATION_COLUMNS]
+
+    # per-variable records: which stations actually measured waves / wind, and when
+    for var, tag in (("wvht", "wave"), ("wspd", "wind")):
+        rec = _var_record(vm, var)
+        df[f"{tag}_start"] = df["station_id"].map(rec["start"]) if rec is not None else pd.NaT
+        df[f"{tag}_end"] = df["station_id"].map(rec["end"]) if rec is not None else pd.NaT
+        if rec is None:  # query failed: numeric ids are moored buoys (waves), letters are C-MAN/NOS (wind)
+            has = df["station_id"].str.match(r"^\d") if tag == "wave" else pd.Series(True, index=df.index)
+            df.loc[has, f"{tag}_start"], df.loc[has, f"{tag}_end"] = df.loc[has, "start"], df.loc[has, "end"]
+    extra = ["wave_start", "wave_end", "wind_start", "wind_end"]
+    return df[STATION_COLUMNS + extra]
+
+
+def _var_record(vm: dict, var: str) -> pd.DataFrame | None:
+    """First/last time each NC-region station reported a valid value of `var`."""
+    if var not in vm:
+        return None
+    st, t, v = vm["station"], vm["time"], vm[var]
+    try:
+        raw = _query([st, t], _bbox_constraints() + [f"{v}!=NaN", f'orderByMinMax("{st},{t}")'])
+    except Exception:
+        return None
+    if raw.empty:
+        return pd.DataFrame(columns=["start", "end"])
+    raw[t] = pd.to_datetime(raw[t], utc=True, errors="coerce")
+    g = raw.groupby(raw[st].astype(str))[t]
+    return pd.DataFrame({"start": g.min(), "end": g.max()})
 
 
 def get_data(station_id: str, start, end, product: str = "waves", progress=None, **_) -> pd.DataFrame:

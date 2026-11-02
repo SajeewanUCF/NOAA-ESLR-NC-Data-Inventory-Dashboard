@@ -19,7 +19,7 @@ import pandas as pd
 import xarray as xr
 
 from config import NC_BBOX
-from loaders.base import empty_stations, finish, nearest, parse_point, wind_from_uv
+from loaders.base import empty_stations, finish, haversine_km, nearest, parse_point, wind_from_uv
 
 SOURCE_NAME = "CONUS404"
 KIND = "gridded"
@@ -99,6 +99,21 @@ def get_data(station_id: str, start, end, product: str = "wind_hourly", progress
     out.attrs["model_location"] = (float(glat[k]), float(glon[k]))
     out.attrs["note"] = f"CONUS404 cell {cell}, {dist:.2f} km from requested point"
     return out
+
+
+def map_layer(lat: float, lon: float):
+    """Outline of the 4-km CONUS404 cell nearest the point (and its neighbours)."""
+    import folium
+    yy, xx, glat, glon, *_ = _nc_grid("daily")
+    k, dist = nearest(lat, lon, glat, glon)
+    fg = folium.FeatureGroup(name="CONUS404 grid cell")
+    d = haversine_km(lat, lon, glat, glon)
+    for j in np.argsort(d)[:9]:
+        h_lat, h_lon = 0.018, 0.018 / np.cos(np.radians(glat[j]))       # ~2 km half-width
+        folium.Rectangle([(glat[j] - h_lat, glon[j] - h_lon), (glat[j] + h_lat, glon[j] + h_lon)],
+                         color="#bcbd22", weight=2 if j == k else 0.7, fill=j == k, fill_opacity=0.15,
+                         interactive=False).add_to(fg)
+    return fg, f"CONUS404 cell centred at {glat[k]:.3f}, {glon[k]:.3f}, {dist:.1f} km from the point."
 
 
 if __name__ == "__main__":
